@@ -123,7 +123,6 @@
         // Control de botones
         document.getElementById('startGameButton').disabled = !serverActive || gameStatus === 'IN_PROGRESS';
         document.getElementById('nextQuestionButton').disabled = !serverActive || gameStatus !== 'IN_PROGRESS';
-        // Los botones de reset siempre están activos si el servidor lo está.
 
         // Renderizar jugadores
         const playerListDiv = document.getElementById('playerList');
@@ -166,7 +165,7 @@
         google.script.run
             .withSuccessHandler(message => {
                 document.getElementById('hostMessage').textContent = message;
-                getHostDashboardDataUpdate(); // Actualizar dashboard después del cambio
+                getHostDashboardDataUpdate();
             })
             .withFailureHandler(onHostFailure)
             .setServerStatus(!serverActive);

@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <title>Mini Kahoot - Anfitrión</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <?!= include('Style'); ?>
+  <style>
+    /* Estilos específicos del anfitrión si los hay */
+    .dashboard-section {
+      margin-bottom: 20px;
+      padding: 15px;
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      background-color: #f9f9f9;
+    }
+    .player-list, .response-list {
+      max-height: 300px;
+      overflow-y: auto;
+      border: 1px solid #eee;
+      padding: 10px;
+      background-color: white;
+    }
+    .player-item, .response-item {
+      padding: 8px;
+      border-bottom: 1px dashed #eee;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .player-item:last-child, .response-item:last-child {
+      border-bottom: none;
+    }
+    .correct-answer {
+      color: green;
+      font-weight: bold;
+    }
+    .incorrect-answer {
+      color: red;
+    }
+    .button-group {
+        display: flex;
+        gap: 10px;
+        margin-top: 10px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Panel de Anfitrión - Mini Kahoot</h1>
+
+    <div class="dashboard-section">
+      <h2>Control del Servidor y Juego</h2>
+      <p>Estado del Servidor: <strong id="serverStatusDisplay">Desconocido</strong></p>
+      <p>Estado del Juego: <strong id="gameStatusDisplay">Desconocido</strong></p>
+      <p>Ronda Actual: <strong id="currentRoundDisplay">0</strong></p>
+      <div class="button-group">
+        <button id="toggleServerButton">Activar Servidor</button>
+        <button id="startGameButton" disabled>Iniciar Juego</button>
+        <button id="nextQuestionButton" disabled>Siguiente Ronda</button>
+        <button id="resetGameButton">Reiniciar Juego (Mantener Jugadores)</button>
+        <button id="resetServerAndPlayersButton">Resetear Servidor y Jugadores (Borrar todo)</button>
+      </div>
+      <p id="hostMessage" class="message"></p>
+    </div>
+
+    <div class="dashboard-section">
+      <h2>Jugadores Conectados</h2>
+      <div id="playerList" class="player-list">
+        <p>No hay jugadores conectados.</p>
+      </div>
+    </div>
+
+    <div class="dashboard-section">
+      <h2>Respuestas de la Ronda Actual</h2>
+      <div id="responsesList" class="response-list">
+        <p>No hay respuestas aún para esta ronda.</p>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let serverActive = false;
+    let gameStatus = 'WAITING';
+    let currentRound = 0;
+    let pollingIntervalId; // Para controlar el polling del anfitrión
+
+    // Función de polling para obtener actualizaciones del dashboard
+    function startHostPolling() {
+        if (pollingIntervalId) clearInterval(pollingIntervalId); // Limpiar cualquier intervalo existente
+        pollingIntervalId = setInterval(getHostDashboardDataUpdate, 2000); // Polling cada 2 segundos
+        console.log("Polling del anfitrión iniciado.");
+    }
+
+    function stopHostPolling() {
+        if (pollingIntervalId) {
+            clearInterval(pollingIntervalId);
+            pollingIntervalId = null;
+            console.log("Polling del anfitrión detenido.");
+        }
+    }
+
+    function getHostDashboardDataUpdate() {
+        google.script.run
+            .withSuccessHandler(renderHostDashboard)
+            .withFailureHandler(onHostFailure)
+            .getHostDashboardData();
+    }
+
+    function renderHostDashboard(data) {
+        console.log("Datos del Dashboard:", data);
+        serverActive = data.serverActive;
+        gameStatus = data.gameStatus;
+        currentRound = data.currentQuestionIndex; // currentQuestionIndex es la ronda actual
+
+        document.getElementById('serverStatusDisplay').textContent = serverActive ? 'Activo' : 'Inactivo';
+        document.getElementById('serverStatusDisplay').style.color = serverActive ? 'green' : 'red';
+        document.getElementById('toggleServerButton').textContent = serverActive ? 'Apagar Servidor' : 'Activar Servidor';
+
+        document.getElementById('gameStatusDisplay').textContent = gameStatus;
+        document.getElementById('currentRoundDisplay').textContent = currentRound;
+
+        // Control de botones
+        document.getElementById('startGameButton').disabled = !serverActive || gameStatus === 'IN_PROGRESS';
+        document.getElementById('nextQuestionButton').disabled = !serverActive || gameStatus !== 'IN_PROGRESS';
+        // Los botones de reset siempre están activos si el servidor lo está.
+
+        // Renderizar jugadores
+        const playerListDiv = document.getElementById('playerList');
+        playerListDiv.innerHTML = ''; // Limpiar lista
+        if (data.players && data.players.length > 0) {
+            data.players.forEach(player => {
+                const playerItem = document.createElement('div');
+                playerItem.className = 'player-item';
+                playerItem.innerHTML = `
+                    <span>${player.name} (${player.position})</span>
+                    <span>Puntuación: ${player.score}</span>
+                `;
+                playerListDiv.appendChild(playerItem);
+            });
+        } else {
+            playerListDiv.innerHTML = '<p>No hay jugadores conectados.</p>';
+        }
+
+        // Renderizar respuestas de la ronda actual
+        const responsesListDiv = document.getElementById('responsesList');
+        responsesListDiv.innerHTML = ''; // Limpiar lista
+        if (data.currentRoundResponses && data.currentRoundResponses.length > 0) {
+            data.currentRoundResponses.forEach(response => {
+                const responseItem = document.createElement('div');
+                responseItem.className = 'response-item';
+                responseItem.innerHTML = `
+                    <span>${response.player} (${response.position}): ${response.answer}</span>
+                    <span class="${response.isCorrect ? 'correct-answer' : 'incorrect-answer'}">${response.isCorrect ? 'Correcta' : 'Incorrecta'}</span>
+                `;
+                responsesListDiv.appendChild(responseItem);
+            });
+        } else {
+            responsesListDiv.innerHTML = '<p>No hay respuestas aún para esta ronda.</p>';
+        }
+    }
+
+    // --- Funciones de control del juego ---
+
+    function toggleServer() {
+        google.script.run
+            .withSuccessHandler(message => {
+                document.getElementById('hostMessage').textContent = message;
+                getHostDashboardDataUpdate(); // Actualizar dashboard después del cambio
+            })
+            .withFailureHandler(onHostFailure)
+            .setServerStatus(!serverActive);
+    }
+
+    function startGame() {
+        google.script.run
+            .withSuccessHandler(message => {
+                document.getElementById('hostMessage').textContent = message;
+                getHostDashboardDataUpdate();
+            })
+            .withFailureHandler(onHostFailure)
+            .startGame();
+    }
+
+    function nextQuestion() {
+        google.script.run
+            .withSuccessHandler(response => {
+                if (response.success) {
+                    document.getElementById('hostMessage').textContent = response.message;
+                } else {
+                    document.getElementById('hostMessage').textContent = "Fin del Juego: " + response.message;
+                }
+                getHostDashboardDataUpdate();
+            })
+            .withFailureHandler(onHostFailure)
+            .getNextQuestion();
+    }
+
+    function resetGame() {
+        if (confirm("¿Estás seguro de que quieres reiniciar el juego? Esto borrará puntuaciones y respuestas, pero mantendrá a los jugadores.")) {
+            google.script.run
+                .withSuccessHandler(message => {
+                    document.getElementById('hostMessage').textContent = message;
+                    getHostDashboardDataUpdate();
+                })
+                .withFailureHandler(onHostFailure)
+                .resetGame();
+        }
+    }
+
+    function resetServerAndPlayers() {
+        if (confirm("¡ADVERTENCIA! Esto reiniciará el servidor y borrará TODOS los jugadores y respuestas. ¿Estás seguro?")) {
+            google.script.run
+                .withSuccessHandler(message => {
+                    document.getElementById('hostMessage').textContent = message;
+                    getHostDashboardDataUpdate();
+                })
+                .withFailureHandler(onHostFailure)
+                .resetServerAndPlayers();
+        }
+    }
+
+    // Manejador de fallos del anfitrión
+    function onHostFailure(error) {
+      console.error("Error del servidor (Anfitrión):", error.message);
+      document.getElementById('hostMessage').textContent = "Error: " + error.message;
+    }
+
+    // Event Listeners
+    document.addEventListener('DOMContentLoaded', function() {
+        document.getElementById('toggleServerButton').addEventListener('click', toggleServer);
+        document.getElementById('startGameButton').addEventListener('click', startGame);
+        document.getElementById('nextQuestionButton').addEventListener('click', nextQuestion);
+        document.getElementById('resetGameButton').addEventListener('click', resetGame);
+        document.getElementById('resetServerAndPlayersButton').addEventListener('click', resetServerAndPlayers);
+
+        // Iniciar el polling al cargar la página
+        startHostPolling();
+    });
+  </script>
+</body>
+</html>

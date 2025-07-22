@@ -1,0 +1,271 @@
+<script>
+    // --- CONEXIONES A ELEMENTOS HTML ---
+    // Ahora coinciden con los IDs de tu index.html
+    const playerNameInput = document.getElementById('playerNameInput');
+    const playerPositionSelect = document.getElementById('playerPositionSelect'); // Nuevo: select de posición
+    const joinButton = document.getElementById('joinButton');
+    const messageDisplay = document.getElementById('message'); // Usado para mensajes de unión
+    const waitingMessage = document.getElementById('waitingMessage'); // Mensaje de espera inicial
+
+    const joinScreenDiv = document.getElementById('join-screen'); // Pantalla de unirse
+    const gameScreenDiv = document.getElementById('game-screen'); // Pantalla principal del juego
+    const gameOverScreenDiv = document.getElementById('game-over-screen'); // Pantalla de juego terminado
+
+    const questionNumberDisplay = document.getElementById('questionNumberDisplay');
+    const questionTextDisplay = document.getElementById('questionTextDisplay');
+    const optionsContainer = document.getElementById('optionsContainer'); // Contenedor de opciones de respuesta
+    const resultMessage = document.getElementById('resultMessage'); // Mensaje de resultado de respuesta
+    const playerScoreDisplay = document.getElementById('playerScoreDisplay'); // Puntuación del jugador
+
+    const finalScoreDisplay = document.getElementById('finalScoreDisplay');
+    const returnToJoinScreenButton = document.getElementById('returnToJoinScreenButton'); // Botón para volver a la pantalla de unión
+
+    // --- VARIABLES DE ESTADO ---
+    let currentPlayerName = '';
+    let currentPlayerPosition = ''; // Nuevo: para la posición del jugador
+    let currentQuestionId = null; 
+    let hasAnsweredCurrentQuestion = false; 
+    let pollingIntervalId = null; 
+
+    // --- FUNCIONES AUXILIARES ---
+
+    /**
+     * Muestra un mensaje de error al jugador y lo registra en la consola.
+     * @param {Error|string} error El objeto de error o mensaje.
+     */
+    function showErrorPlayer(error) {
+        console.error('Error de Apps Script (Jugador):', error);
+        messageDisplay.textContent = 'Error: ' + (error.message || error);
+        messageDisplay.style.color = 'red';
+    }
+
+    /**
+     * Cambia la visibilidad de las secciones de la interfaz del jugador.
+     * @param {string} section 'join', 'game', o 'gameOver'
+     */
+    function showSection(section) {
+        joinScreenDiv.style.display = 'none';
+        gameScreenDiv.style.display = 'none';
+        gameOverScreenDiv.style.display = 'none';
+
+        if (section === 'join') {
+            joinScreenDiv.style.display = 'block';
+            messageDisplay.textContent = ''; // Limpiar mensaje al volver
+            waitingMessage.style.display = 'block'; // Mostrar mensaje de espera inicial
+        } else if (section === 'game') {
+            gameScreenDiv.style.display = 'block';
+            waitingMessage.style.display = 'none'; // Ocultar mensaje de espera
+        } else if (section === 'gameOver') {
+            gameOverScreenDiv.style.display = 'block';
+            waitingMessage.style.display = 'none'; // Ocultar mensaje de espera
+        }
+    }
+
+    /**
+     * Renderiza las opciones de respuesta como botones.
+     * @param {Array<string>} options Array de strings con las opciones.
+     */
+    function renderAnswerOptions(options) {
+        optionsContainer.innerHTML = ''; 
+        if (!options || options.length === 0) {
+            optionsContainer.innerHTML = '<p>No hay opciones de respuesta disponibles.</p>';
+            return;
+        }
+        options.forEach(option => {
+            const button = document.createElement('button');
+            button.textContent = option;
+            button.className = 'answer-button'; 
+            button.onclick = () => submitAnswer(option);
+            optionsContainer.appendChild(button);
+        });
+    }
+
+    /**
+     * Envía la respuesta del jugador al servidor.
+     * @param {string} answer La respuesta seleccionada por el jugador.
+     */
+    function submitAnswer(answer) {
+        if (hasAnsweredCurrentQuestion) {
+            resultMessage.textContent = 'Ya has respondido a esta pregunta.';
+            resultMessage.style.color = 'orange';
+            return;
+        }
+
+        resultMessage.textContent = 'Enviando respuesta...';
+        resultMessage.style.color = 'gray';
+        
+        // Deshabilitar botones para evitar múltiples envíos
+        Array.from(optionsContainer.children).forEach(button => button.disabled = true);
+
+        google.script.run
+            .withSuccessHandler(result => {
+                hasAnsweredCurrentQuestion = true; 
+                if (result.success) {
+                    resultMessage.textContent = 'Respuesta enviada: ' + answer;
+                    resultMessage.style.color = 'green';
+                } else {
+                    resultMessage.textContent = 'Error al enviar respuesta: ' + result.message;
+                    resultMessage.style.color = 'red';
+                }
+            })
+            .withFailureHandler(showErrorPlayer)
+            .submitPlayerAnswer(currentPlayerName, currentQuestionId, answer);
+    }
+
+    // --- MANEJADORES DE EVENTOS DE SERVIDOR (CALLBACKS) ---
+
+    /**
+     * Maneja la respuesta del servidor al intentar unirse al juego.
+     * @param {object} result Objeto con success (boolean) y message (string).
+     */
+    function onJoinedGame(result) {
+        if (result.success) {
+            currentPlayerName = playerNameInput.value;
+            currentPlayerPosition = playerPositionSelect.value;
+            playerScoreDisplay.textContent = `Puntuación: ${result.score}`; 
+            showSection('game'); 
+            messageDisplay.textContent = '¡Unido con éxito!';
+            messageDisplay.style.color = 'green';
+            startPolling(); 
+        } else {
+            messageDisplay.textContent = 'Error al unirse: ' + result.message;
+            messageDisplay.style.color = 'red';
+        }
+    }
+
+    /**
+     * Maneja las actualizaciones periódicas del estado del juego desde el servidor.
+     * @param {object} data Objeto con el estado del juego y la información del jugador.
+     */
+    function onPlayerUpdates(data) {
+        // console.log('Actualización del jugador:', data); 
+
+        if (!data || !data.playerExists) {
+            stopPolling(); 
+            showSection('gameOver'); 
+            finalScoreDisplay.textContent = data.playerScore || 'N/A'; 
+            returnToJoinScreenButton.style.display = 'block'; 
+            messageDisplay.textContent = 'El juego ha finalizado o tu sesión ha expirado.'; 
+            messageDisplay.style.color = 'blue';
+            return;
+        }
+
+        playerScoreDisplay.textContent = `Puntuación: ${data.playerScore}`;
+        
+        if (data.gameStatus === 'IN_PROGRESS') {
+            if (data.currentQuestion && data.currentQuestion.id !== currentQuestionId) {
+                currentQuestionId = data.currentQuestion.id;
+                hasAnsweredCurrentQuestion = false; 
+                questionNumberDisplay.textContent = `Ronda: ${data.currentQuestion.roundNumber}`;
+                questionTextDisplay.textContent = data.currentQuestion.text;
+                renderAnswerOptions(data.currentQuestion.options);
+                resultMessage.textContent = 'Elige una respuesta.';
+                resultMessage.style.color = 'black';
+                Array.from(optionsContainer.children).forEach(button => button.disabled = false);
+            } else if (!data.currentQuestion) {
+                questionNumberDisplay.textContent = ''; 
+                questionTextDisplay.textContent = 'Esperando la siguiente pregunta...';
+                optionsContainer.innerHTML = ''; 
+                resultMessage.textContent = '';
+            } else if (hasAnsweredCurrentQuestion) {
+                Array.from(optionsContainer.children).forEach(button => button.disabled = true);
+                resultMessage.textContent = 'Tu respuesta ha sido registrada.';
+                resultMessage.style.color = 'green';
+            }
+            showSection('game'); 
+        } else if (data.gameStatus === 'WAITING') {
+            questionNumberDisplay.textContent = '';
+            questionTextDisplay.textContent = 'Esperando que el anfitrión inicie el juego...';
+            optionsContainer.innerHTML = '';
+            resultMessage.textContent = '';
+            showSection('join'); 
+            waitingMessage.style.display = 'block'; 
+        } else if (data.gameStatus === 'GAME_OVER') {
+            stopPolling();
+            showSection('gameOver');
+            finalScoreDisplay.textContent = data.playerScore || 'N/A'; 
+            returnToJoinScreenButton.style.display = 'block';
+            messageDisplay.textContent = '¡El juego ha terminado! Gracias por jugar.';
+            messageDisplay.style.color = 'blue';
+        }
+    }
+
+    // --- LISTENERS DE EVENTOS DE USUARIO ---
+    // ESTAS LINEAS SE EJECUTARÁN DESPUÉS DE QUE EL DOM ESTÉ COMPLETAMENTE CARGADO
+    // GRACIAS AL EVENTO 'DOMContentLoaded' A CONTINUACIÓN.
+
+    // --- POLLING DEL SERVIDOR ---
+    function startPolling() {
+        if (pollingIntervalId) {
+            clearInterval(pollingIntervalId); 
+        }
+        pollingIntervalId = setInterval(() => {
+            if (currentPlayerName) { 
+                google.script.run
+                    .withSuccessHandler(onPlayerUpdates)
+                    .withFailureHandler(showErrorPlayer)
+                    .getPlayerUpdates(currentPlayerName); 
+            } else {
+                stopPolling();
+                showSection('join'); 
+            }
+        }, 3000); 
+    }
+
+    function stopPolling() {
+        if (pollingIntervalId) {
+            clearInterval(pollingIntervalId);
+            pollingIntervalId = null;
+        }
+    }
+
+    // --- INICIALIZACIÓN ---
+    // Ejecuta este código solo después de que el DOM esté completamente cargado.
+    document.addEventListener('DOMContentLoaded', (event) => {
+        // CONEXIONES A ELEMENTOS HTML (redundantes si ya están arriba, pero para claridad se mantiene la estructura)
+        // Se asegura que los elementos existan antes de añadir listeners.
+        // Las const declarations ya se hicieron al principio del script, estas líneas solo confirman que los elementos no son null
+        // antes de intentar añadir un listener.
+
+        if (joinButton) {
+            joinButton.addEventListener('click', () => {
+                const playerName = playerNameInput.value.trim();
+                const playerPosition = playerPositionSelect.value; 
+
+                if (playerName && playerPosition) {
+                    messageDisplay.textContent = 'Intentando unirse...';
+                    messageDisplay.style.color = 'gray';
+                    google.script.run
+                        .withSuccessHandler(onJoinedGame)
+                        .withFailureHandler(showErrorPlayer)
+                        .joinGame(playerName, playerPosition); 
+                } else {
+                    messageDisplay.textContent = 'Por favor, introduce tu nombre y selecciona una posición.';
+                    messageDisplay.style.color = 'red';
+                }
+            });
+        } else {
+            console.error("Error: Elemento 'joinButton' no encontrado.");
+        }
+
+        if (returnToJoinScreenButton) {
+            returnToJoinScreenButton.addEventListener('click', () => {
+                stopPolling(); 
+                currentPlayerName = ''; 
+                currentPlayerPosition = '';
+                currentQuestionId = null;
+                hasAnsweredCurrentQuestion = false;
+                playerNameInput.value = ''; 
+                playerPositionSelect.value = ''; 
+                showSection('join'); 
+                returnToJoinScreenButton.style.display = 'none'; 
+                messageDisplay.textContent = ''; 
+            });
+        } else {
+            console.error("Error: Elemento 'returnToJoinScreenButton' no encontrado.");
+        }
+
+        // Mostrar la sección de unión al cargar la página
+        showSection('join');
+    });
+</script>

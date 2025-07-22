@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <title>Mini Kahoot - Jugador</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <?!= include('Style'); ?> 
+  <style>
+    /* Estilos específicos del jugador si los hay */
+  </style>
+</head>
+<body>
+  <div class="container" id="loadingScreen">
+    <h1>Cargando Mini Kahoot...</h1>
+    <p>Por favor espera.</p>
+  </div>
+
+  <div class="container" id="joinScreen" style="display:none;">
+    <h1>Únete a Mini Kahoot</h1>
+    <input type="text" id="playerNameInput" placeholder="Tu Nombre de Jugador" maxlength="15">
+    <div class="position-selection">
+      <button class="position-button" data-position="A">Posición A</button>
+      <button class="position-button" data-position="B">Posición B</button>
+      <button class="position-button" data-position="C">Posición C</button>
+    </div>
+    <p id="joinMessage" class="message"></p>
+  </div>
+
+  <div class="container" id="waitingScreen" style="display:none;">
+    <h1>¡Conectado!</h1>
+    <p>Nombre: <strong id="waitingPlayerName"></strong></p>
+    <p>Posición: <strong id="waitingPlayerPosition"></strong></p>
+    <p>Puntuación: <strong id="waitingPlayerScore">0</strong></p>
+    <p>Esperando que el anfitrión inicie la próxima ronda...</p>
+    <p id="gameStatusDisplay" class="message"></p>
+  </div>
+
+  <div class="container" id="gameScreen" style="display:none;">
+    <h2 id="questionNumberDisplay">Ronda X</h2>
+    <p id="questionText"></p>
+    <div id="optionsContainer" class="options-grid">
+      <button class="option-button" data-answer="A"></button>
+      <button class="option-button" data-answer="B"></button>
+      <button class="option-button" data-answer="C"></button>
+      <button class="option-button" data-answer="D"></button>
+    </div>
+    <p id="feedbackMessage" class="message"></p>
+    <p>Tu Puntuación: <strong id="playerCurrentScore">0</strong></p>
+  </div>
+
+  <div class="container" id="gameOverScreen" style="display:none;">
+    <h1>¡Juego Terminado!</h1>
+    <p>Gracias por jugar, <strong id="finalPlayerName"></strong>.</p>
+    <p>Tu Puntuación Final: <strong id="finalPlayerScore"></strong></p>
+    <p>Rondas Completadas: <strong id="finalRoundsCompleted"></strong></p>
+    <p>Esperando un nuevo juego...</p>
+  </div>
+
+  <script>
+    // Variables globales para el estado del jugador
+    let playerName = '';
+    let playerPosition = '';
+    let playerCurrentScore = 0;
+    let hasAnsweredCurrentRound = false;
+    let playerQuestions = []; // Caché de preguntas para el jugador
+    let currentLocalQuestionIndex = 0; // Índice de la pregunta actual en la caché del jugador
+    let gameResponses = []; // Para almacenar las respuestas del jugador localmente
+    let pollingIntervalId; // Para controlar el polling
+
+    // Función para manejar el éxito al unirse al juego
+    function onRegisterPlayerSuccess(response) {
+      if (response.success) {
+        playerName = response.playerName || document.getElementById('playerNameInput').value;
+        playerPosition = response.position || playerPosition; // Usa la posición que envió el servidor o la local
+        playerCurrentScore = response.score || 0;
+
+        document.getElementById('waitingPlayerName').textContent = playerName;
+        document.getElementById('waitingPlayerPosition').textContent = playerPosition;
+        document.getElementById('waitingPlayerScore').textContent = playerCurrentScore;
+
+        document.getElementById('joinScreen').style.display = 'none';
+        document.getElementById('waitingScreen').style.display = 'block';
+        document.getElementById('playerCurrentScore').textContent = playerCurrentScore;
+
+        // Obtener todas las preguntas para esta posición una vez
+        google.script.run
+          .withSuccessHandler(onGetAllQuestionsSuccess)
+          .withFailureHandler(onFailure)
+          .getAllQuestionsForPlayerPosition(playerPosition);
+        
+        // Iniciar el polling para actualizaciones del juego
+        startPolling();
+
+      } else {
+        document.getElementById('joinMessage').textContent = response.message;
+      }
+    }
+
+    // Función para manejar las preguntas obtenidas
+    function onGetAllQuestionsSuccess(questions) {
+        if (questions.error) {
+            document.getElementById('gameStatusDisplay').textContent = questions.message;
+            return;
+        }
+        playerQuestions = questions;
+        console.log("Preguntas cargadas para el jugador:", playerQuestions);
+        // No se muestra la primera pregunta aquí, se espera el "start game" del host.
+    }
+
+    // Función de polling para obtener actualizaciones del juego
+    function startPolling() {
+      if (pollingIntervalId) clearInterval(pollingIntervalId); // Limpiar cualquier intervalo existente
+      pollingIntervalId = setInterval(checkGameStatus, 2000); // Polling cada 2 segundos
+      console.log("Polling iniciado.");
+    }
+
+    function stopPolling() {
+        if (pollingIntervalId) {
+            clearInterval(pollingIntervalId);
+            pollingIntervalId = null;
+            console.log("Polling detenido.");
+        }
+    }
+
+    function checkGameStatus() {
+        if (!playerName) return; // No hacer polling si el jugador no se ha unido
+        google.script.run
+            .withSuccessHandler(handleGameStatusUpdate)
+            .withFailureHandler(onFailure)
+            .getGameStatus(); // Usamos getGameStatus para el polling general del jugador
+    }
+
+    // Manejar actualizaciones del estado del juego desde el servidor
+    function handleGameStatusUpdate(statusData) {
+        const currentGlobalRound = statusData.currentQuestionIndex; // currentQuestionIndex es la ronda actual
+        const gameStatus = statusData.gameStatus;
+        const serverActive = statusData.serverActive;
+
+        if (!serverActive && gameStatus !== 'GAME_OVER') {
+            document.getElementById('gameStatusDisplay').textContent = "El servidor está inactivo. Esperando...";
+            // Si el servidor se desactiva y no es GAME_OVER, volver a la pantalla de unión
+            // displayScreen('joinScreen'); // Podría ser una opción, o 'waitingScreen'
+            // stopPolling(); // Detener el polling si el servidor no está activo
+            return;
+        }
+
+        if (gameStatus === 'WAITING' || gameStatus === 'IN_PROGRESS') {
+            document.getElementById('gameOverScreen').style.display = 'none';
+            document.getElementById('waitingScreen').style.display = 'block';
+            document.getElementById('gameScreen').style.display = 'none';
+            document.getElementById('gameStatusDisplay').textContent = `El juego está en ${gameStatus === 'WAITING' ? 'espera' : 'progreso'}. Ronda actual: ${currentGlobalRound}`;
+        }
+        
+        // Lógica para mostrar la pregunta cuando la ronda global avanza
+        if (gameStatus === 'IN_PROGRESS' && currentGlobalRound > 0) {
+            // Encontrar la pregunta local correspondiente a la ronda global actual
+            const questionForThisRound = playerQuestions.find(q => Number(q.round) === currentGlobalRound);
+
+            if (questionForThisRound) {
+                if (questionForThisRound.questionNumber === currentLocalQuestionIndex) {
+                    // Si ya estamos mostrando esta pregunta, no hacer nada.
+                    return;
+                }
+                
+                // Nueva pregunta para la ronda actual
+                currentLocalQuestionIndex = questionForThisRound.questionNumber;
+                hasAnsweredCurrentRound = false; // Resetear el estado de respuesta para la nueva pregunta
+
+                document.getElementById('waitingScreen').style.display = 'none';
+                document.getElementById('gameScreen').style.display = 'block';
+                document.getElementById('feedbackMessage').textContent = ''; // Limpiar feedback
+                
+                renderQuestion(questionForThisRound);
+            } else if (currentGlobalRound > 0 && playerQuestions.filter(q => Number(q.round) <= currentGlobalRound).length > 0) {
+                // Si la ronda global es mayor que la última ronda del jugador,
+                // pero no hay una pregunta específica para la posición del jugador en esta ronda,
+                // el jugador simplemente espera la siguiente ronda o el fin del juego.
+                document.getElementById('gameScreen').style.display = 'none';
+                document.getElementById('waitingScreen').style.display = 'block';
+                document.getElementById('gameStatusDisplay').textContent = `Esperando la siguiente pregunta para tu posición o fin del juego. Ronda actual: ${currentGlobalRound}`;
+                // Asegurarse de que el polling continúe para detectar cambios
+            } else {
+                // Si no hay preguntas para el jugador en esta ronda, y tampoco hay preguntas en general
+                // o el juego está en un estado inesperado.
+                document.getElementById('gameScreen').style.display = 'none';
+                document.getElementById('waitingScreen').style.display = 'block';
+                document.getElementById('gameStatusDisplay').textContent = `El juego está en progreso (Ronda ${currentGlobalRound}), pero no hay más preguntas para ti. Espera al final.`;
+            }
+        } else if (gameStatus === 'GAME_OVER') {
+            displayGameOverScreen();
+        } else if (gameStatus === 'WAITING' && currentGlobalRound === 0) {
+            // Si el juego ha sido reseteado o está esperando inicio
+            document.getElementById('gameScreen').style.display = 'none';
+            document.getElementById('gameOverScreen').style.display = 'none';
+            document.getElementById('waitingScreen').style.display = 'block';
+            document.getElementById('gameStatusDisplay').textContent = "El juego está en espera. Esperando al anfitrión.";
+            currentLocalQuestionIndex = 0; // Reiniciar índice local
+            hasAnsweredCurrentRound = false;
+        }
+    }
+
+
+    // Renderiza la pregunta en la pantalla del juego
+    function renderQuestion(questionData) {
+      document.getElementById('questionNumberDisplay').textContent = `Ronda ${questionData.round}`;
+      document.getElementById('questionText').textContent = questionData.question;
+      const optionsContainer = document.getElementById('optionsContainer');
+      optionsContainer.innerHTML = ''; // Limpiar opciones anteriores
+
+      questionData.options.forEach((optionText, index) => {
+        const button = document.createElement('button');
+        button.className = 'option-button';
+        // Asignar A, B, C, D o 1, 2, 3, 4 dependiendo de cómo se manejen las respuestas
+        const answerLabel = String.fromCharCode(65 + index); // A, B, C, D
+        button.textContent = `${answerLabel}) ${optionText}`;
+        button.dataset.answer = answerLabel;
+        button.onclick = () => selectAnswer(questionData.questionNumber, answerLabel, questionData.correctAnswer, questionData.round);
+        optionsContainer.appendChild(button);
+      });
+
+      // Deshabilitar botones si ya respondió
+      const optionButtons = document.querySelectorAll('#optionsContainer .option-button');
+      optionButtons.forEach(button => button.disabled = hasAnsweredCurrentRound);
+    }
+
+    // Maneja la selección de respuesta del jugador
+    function selectAnswer(questionId, selectedAnswer, correctAnswer, round) {
+      if (hasAnsweredCurrentRound) {
+        document.getElementById('feedbackMessage').textContent = "Ya has respondido a esta pregunta.";
+        return;
+      }
+      
+      hasAnsweredCurrentRound = true; // El jugador ha respondido a la pregunta actual
+
+      const isCorrect = (selectedAnswer === correctAnswer);
+      let scoreGained = isCorrect ? 100 : 0; // Puedes ajustar la lógica de puntuación
+
+      playerCurrentScore += scoreGained;
+      document.getElementById('playerCurrentScore').textContent = playerCurrentScore;
+      document.getElementById('feedbackMessage').textContent = isCorrect ? "¡Correcto! +100 puntos" : "Incorrecto.";
+      document.getElementById('feedbackMessage').style.color = isCorrect ? 'green' : 'red';
+
+      // Deshabilitar botones después de responder
+      const optionButtons = document.querySelectorAll('#optionsContainer .option-button');
+      optionButtons.forEach(button => button.disabled = true);
+
+      // Guardar la respuesta localmente
+      gameResponses.push({
+          questionNumber: questionId,
+          selectedAnswer: selectedAnswer,
+          isCorrect: isCorrect,
+          scoreGained: scoreGained,
+          playerPosition: playerPosition,
+          round: round // Guardar la ronda asociada a la respuesta
+      });
+
+      // Si es la última pregunta del jugador, envía los resultados al servidor
+      // (Esta lógica es más compleja si las preguntas se cargan dinámicamente)
+      // Por ahora, enviaremos los resultados finales solo cuando el juego termine (GAME_OVER)
+    }
+
+    // Muestra la pantalla de fin de juego y envía resultados
+    function displayGameOverScreen() {
+        stopPolling(); // Detener el polling
+        document.getElementById('waitingScreen').style.display = 'none';
+        document.getElementById('gameScreen').style.display = 'none';
+        document.getElementById('gameOverScreen').style.display = 'block';
+
+        document.getElementById('finalPlayerName').textContent = playerName;
+        document.getElementById('finalPlayerScore').textContent = playerCurrentScore;
+        // Asume que la última ronda completada es la última ronda de una respuesta válida, o la última ronda conocida.
+        const lastRoundCompleted = gameResponses.length > 0 ? Math.max(...gameResponses.map(r => r.round)) : 0;
+        document.getElementById('finalRoundsCompleted').textContent = lastRoundCompleted;
+
+        // Enviar todas las respuestas del jugador y la puntuación final al servidor
+        google.script.run
+            .withSuccessHandler(res => console.log("Resultados finales registrados:", res))
+            .withFailureHandler(onFailure)
+            .recordPlayerFinalResults(playerName, gameResponses, playerCurrentScore, lastRoundCompleted);
+
+        // Limpiar para un posible nuevo juego
+        playerName = '';
+        playerPosition = '';
+        playerCurrentScore = 0;
+        hasAnsweredCurrentRound = false;
+        playerQuestions = [];
+        currentLocalQuestionIndex = 0;
+        gameResponses = [];
+        // La pantalla de unión se mostrará después de un breve retraso si el anfitrión reinicia.
+        // O podrías tener un botón para "Jugar de Nuevo"
+    }
+
+    // Manejador genérico de fallos
+    function onFailure(error) {
+      console.error("Error del servidor:", error.message);
+      document.getElementById('joinMessage').textContent = "Error: " + error.message;
+      // Puedes añadir más lógica para el usuario aquí
+    }
+
+    // Event Listeners
+    document.addEventListener('DOMContentLoaded', function() {
+      document.getElementById('loadingScreen').style.display = 'none';
+      document.getElementById('joinScreen').style.display = 'block';
+
+      document.querySelectorAll('.position-button').forEach(button => {
+        button.addEventListener('click', function() {
+          const selectedPosition = this.dataset.position;
+          const name = document.getElementById('playerNameInput').value.trim();
+          if (name) {
+            playerPosition = selectedPosition;
+            google.script.run
+              .withSuccessHandler(onRegisterPlayerSuccess)
+              .withFailureHandler(onFailure)
+              .registerPlayer(name, selectedPosition); // Corrected function call
+          } else {
+            document.getElementById('joinMessage').textContent = 'Por favor, ingresa tu nombre.';
+          }
+        });
+      });
+    });
+
+  </script>
+</body>
+</html>

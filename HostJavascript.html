@@ -1,0 +1,346 @@
+<script>
+    // --- CONEXIONES A ELEMENTOS HTML ---
+    const toggleServerButton = document.getElementById('toggleServerButton');
+    const serverStatusDisplay = document.getElementById('serverStatusDisplay');
+
+    const startGameButton = document.getElementById('startGameButton');
+    const endGameNowButton = document.getElementById('endGameNowButton'); 
+    const resetServerAndPlayersButton = document.getElementById('resetServerAndPlayersButton'); 
+
+    const playersList = document.getElementById('playersList');
+    const currentQuestionHost = document.getElementById('currentQuestionHost');
+    const responsesCountDisplay = document.getElementById('responsesCount');
+    const questionResponsesDiv = document.getElementById('questionResponses');
+    const gameInfoDiv = document.getElementById('game-info');
+
+    // Elementos de revisión de respuestas (se mantienen ocultos y no se usan directamente)
+    const reviewResponsesContainer = document.getElementById('reviewResponsesContainer');
+    const reviewRoundNumberDisplay = document.getElementById('reviewRoundNumber');
+    const currentReviewResponseDisplay = document.getElementById('currentReviewResponse');
+    const nextReviewResponseButton = document.getElementById('nextReviewResponseButton');
+    const finishReviewButton = document.getElementById('finishReviewButton');
+    const finalScoresList = document.getElementById('finalScoresList'); 
+
+    // --- VARIABLES DE ESTADO ---
+    let currentGlobalRoundHost = -1; 
+    let serverActiveState = false; 
+    let allResponsesForReview = []; 
+
+    // --- FUNCIONES AUXILIARES (DEFINIDAS PRIMERO PARA ASEGURAR DISPONIBILIDAD) ---
+
+    /**
+     * Muestra un mensaje de error al anfitrión y lo registra en la consola.
+     * @param {Error|string} error El objeto de error o mensaje.
+     */
+    function showErrorHost(error) {
+        console.error('Error de Apps Script (Anfitrión):', error);
+        alert('Ocurrió un error en el servidor: ' + (error.message || error));
+    }
+
+    /**
+     * Centraliza la secuencia de finalización del juego.
+     * @param {string} completionReason Razón por la que el juego terminó ('Finalizado por Rondas', 'Juego Terminado Manualmente').
+     */
+    function endGameSequence(completionReason) {
+        currentQuestionHost.textContent = 'Juego Finalizado.'; 
+        startGameButton.style.display = 'none'; // Oculta Iniciar Juego
+        endGameNowButton.style.display = 'none'; // Oculta Terminar Juego
+        
+        google.script.run
+            .withSuccessHandler(historyMessage => {
+                console.log(historyMessage); 
+                google.script.run
+                    .withSuccessHandler(displayFinalScores)
+                    .withFailureHandler(showErrorHost)
+                    .getFinalScores(); 
+                
+                // Llama a clearAllPlayers para eliminar a los jugadores después de que el juego finaliza
+                google.script.run
+                    .withSuccessHandler(message => {
+                        console.log(message);
+                        playersList.innerHTML = '<li>No hay jugadores conectados.</li>'; 
+                        
+                        // Después de eliminar jugadores, cargamos y mostramos todas las respuestas finales
+                        google.script.run
+                            .withSuccessHandler(allGameResponses => {
+                                displayQuestionResponsesForEndOfGame(allGameResponses);
+                            })
+                            .withFailureHandler(showErrorHost)
+                            .getAllGameResponses(); 
+                    })
+                    .withFailureHandler(showErrorHost)
+                    .clearAllPlayers();
+
+            })
+            .withFailureHandler(showErrorHost)
+            .recordGameHistory(completionReason); 
+    }
+
+    /**
+     * Muestra la lista de jugadores conectados y sus puntuaciones.
+     * @param {Array<object>} players Un array de objetos de jugador.
+     */
+    function displayPlayersAndScores(players) {
+        playersList.innerHTML = ''; 
+        if (players.length === 0) {
+            playersList.innerHTML = '<li>No hay jugadores conectados.</li>';
+            return;
+        }
+        players.sort((a, b) => b.score - a.score); 
+        players.forEach(player => {
+            const li = document.createElement('li');
+            li.textContent = `${player.name} (${player.position}) - Ronda ${player.currentRound}: ${player.score} puntos`;
+            playersList.appendChild(li);
+        });
+    }
+
+    /**
+     * Muestra las respuestas de la ronda actual y las guarda para la revisión final.
+     * (Aunque ya no se usará "ronda actual" en este contexto, la función permanece para el polling)
+     * @param {Array<object>} responses An array of response objects for the current round.
+     */
+    function displayQuestionResponses(responses) {
+        responsesCountDisplay.textContent = responses.length;
+        allResponsesForReview = responses; 
+    }
+
+    /**
+     * Muestra las puntuaciones finales de todos los jugadores al finalizar el juego.
+     * @param {Array<object>} scores An array de objetos de jugador con puntuaciones finales.
+     */
+    function displayFinalScores(scores) {
+        alert('Juego Terminado! Ver las puntuaciones finales en el panel.');
+        finalScoresList.innerHTML = ''; 
+        if (scores.length === 0) {
+            finalScoresList.innerHTML = '<li>No hay puntuaciones finales.</li>';
+            return;
+        }
+        scores.sort((a, b) => b.score - a.score); 
+        scores.forEach(player => {
+            const li = document.createElement('li');
+            li.textContent = `${player.name} (${player.position}): ${player.score} puntos`;
+            finalScoresList.appendChild(li);
+        });
+    }
+
+    /**
+     * Muestra todas las respuestas de juego (de todas las rondas) en una lista al final del juego.
+     * @param {Array<object>} allGameResponses Un array de objetos de respuesta de todas las rondas del juego.
+     */
+    function displayQuestionResponsesForEndOfGame(allGameResponses) {
+        const ul = questionResponsesDiv.querySelector('ul');
+        if (!ul) { 
+            const newUl = document.createElement('ul');
+            questionResponsesDiv.appendChild(newUl);
+            ul = newUl;
+        }
+        ul.innerHTML = ''; 
+        if (allGameResponses.length === 0) {
+            ul.innerHTML = '<li>No hay respuestas registradas para este juego.</li>';
+            responsesCountDisplay.textContent = '0';
+            return;
+        }
+        
+        responsesCountDisplay.textContent = allGameResponses.length;
+
+        allGameResponses.sort((a, b) => {
+            if (a.questionNumber !== b.questionNumber) {
+                return a.questionNumber - b.questionNumber;
+            }
+            return a.player.localeCompare(b.player);
+        });
+
+        allGameResponses.forEach(response => {
+            const li = document.createElement('li');
+            li.textContent = `Ronda ${response.questionNumber} - ${response.player} (${response.position}): ${response.answer} (${response.isCorrect ? 'Correcto' : 'Incorrecto'})`;
+            li.style.color = response.isCorrect ? 'green' : 'red'; 
+            ul.appendChild(li);
+        });
+    }
+
+    // Funciones de revisión que ya no se usan directamente por UI, pero se mantienen sin operación
+    function startReviewingResponses() { /* no-op */ }
+    function showNextReviewResponse() { /* no-op */ }
+    function finishReviewingResponses() { 
+        reviewResponsesContainer.style.display = 'none';
+        questionResponsesDiv.style.display = 'block'; 
+    }
+
+    // --- MANEJADORES DE EVENTOS DE SERVIDOR (CALLBACKS) ---
+
+    /**
+     * Maneja los cambios en el estado del servidor (activo/inactivo).
+     * @param {boolean} newState El nuevo estado activo del servidor.
+     * @param {string} message Un mensaje del servidor.
+     */
+    function onServerStatusChanged(newState, message) {
+        serverActiveState = newState;
+        serverStatusDisplay.textContent = `Servidor: ${serverActiveState ? 'Activo' : 'Inactivo'}`;
+        serverStatusDisplay.style.color = serverActiveState ? 'green' : 'red';
+        toggleServerButton.textContent = serverActiveState ? 'Apagar Servidor' : 'Encender Servidor';
+        alert(message);
+
+        if (serverActiveState) {
+            gameInfoDiv.style.display = 'block';
+            startGameButton.style.display = 'block'; // Mostrar Iniciar Juego si el servidor está activo
+            endGameNowButton.style.display = 'none'; // Ocultar Terminar Juego al principio
+            questionResponsesDiv.querySelector('ul').innerHTML = ''; 
+            responsesCountDisplay.textContent = '0';
+            finalScoresList.innerHTML = ''; 
+        } else {
+            startGameButton.style.display = 'none';
+            endGameNowButton.style.display = 'none'; 
+            gameInfoDiv.style.display = 'none';
+            finalScoresList.innerHTML = ''; 
+            questionResponsesDiv.querySelector('ul').innerHTML = ''; 
+            responsesCountDisplay.textContent = '0';
+        }
+    }
+
+    /**
+     * Maneja el evento cuando el juego es iniciado por el anfitrión.
+     * @param {string} message Un mensaje de confirmación del servidor.
+     */
+    function onGameStarted(message) {
+        alert(message);
+        startGameButton.style.display = 'none'; // Oculta Iniciar Juego
+        endGameNowButton.style.display = 'block'; // Muestra Terminar Juego
+        finalScoresList.innerHTML = ''; 
+        questionResponsesDiv.querySelector('ul').innerHTML = ''; 
+        responsesCountDisplay.textContent = '0';
+        
+        // Iniciar la primera ronda automáticamente al iniciar el juego
+        google.script.run
+            .withSuccessHandler(onNextGlobalRound)
+            .withFailureHandler(showErrorHost)
+            .getNextQuestion();
+    }
+
+    /**
+     * Maneja el avance a la siguiente ronda global o la finalización del juego.
+     * Esta función es llamada por getNextQuestion desde el servidor.
+     * @param {object} result El objeto de resultado de la función getNextQuestion del servidor.
+     */
+    function onNextGlobalRound(result) {
+        if (result.success) {
+            currentGlobalRoundHost = result.newRound;
+            currentQuestionHost.textContent = `Ronda Global Activa: ${currentGlobalRoundHost}`;
+            questionResponsesDiv.querySelector('ul').innerHTML = ''; 
+            responsesCountDisplay.textContent = '0';
+            startGameButton.style.display = 'none'; // Asegurarse de que Iniciar Juego esté oculto
+            endGameNowButton.style.display = 'block'; // Asegurarse de que Terminar Juego esté visible
+        } else {
+            // El juego ha terminado porque no hay más rondas (o un error lógico de getNextQuestion)
+            alert('¡Mensaje del juego: ' + result.message);
+            endGameSequence('Finalizado por Rondas');
+        }
+    }
+
+    /**
+     * Maneja el evento de reseteo completo del servidor y los jugadores.
+     * @param {string} message Un mensaje de confirmación del servidor.
+     */
+    function onServerAndPlayersReset(message) {
+        alert(message);
+        serverActiveState = false; 
+        serverStatusDisplay.textContent = 'Servidor: Inactivo';
+        serverStatusDisplay.style.color = 'red';
+        toggleServerButton.textContent = 'Encender Servidor';
+        
+        startGameButton.style.display = 'none'; // Asegurarse de que Iniciar Juego esté oculto
+        endGameNowButton.style.display = 'none'; // Asegurarse de que Terminar Juego esté oculto
+        gameInfoDiv.style.display = 'none';
+        
+        currentGlobalRoundHost = -1; 
+        currentQuestionHost.textContent = 'Ronda Global Activa: -'; 
+        responsesCountDisplay.textContent = '0';
+        questionResponsesDiv.querySelector('ul').innerHTML = '';
+        finalScoresList.innerHTML = ''; 
+    }
+
+    // --- LISTENERS DE EVENTOS DE USUARIO ---
+    toggleServerButton.addEventListener('click', () => {
+        const newState = !serverActiveState;
+        google.script.run
+            .withSuccessHandler(message => onServerStatusChanged(newState, message))
+            .withFailureHandler(showErrorHost)
+            .setServerStatus(newState);
+    });
+
+    startGameButton.addEventListener('click', () => {
+        google.script.run
+            .withSuccessHandler(onGameStarted)
+            .withFailureHandler(showErrorHost)
+            .startGame();
+    });
+
+    // Event Listener para el botón "Terminar Juego" - siempre termina el juego
+    endGameNowButton.addEventListener('click', () => {
+        if (confirm('¿Estás seguro de que quieres terminar el juego AHORA? Esto finalizará la partida para todos los jugadores y mostrará los resultados finales.')) {
+            endGameSequence('Juego Terminado Manualmente');
+        }
+    });
+
+    resetServerAndPlayersButton.addEventListener('click', () => {
+        if (confirm('¡ADVERTENCIA! ¿Estás seguro de que quieres REINICIAR el SERVIDOR y BORRAR a TODOS los JUGADORES? Esto eliminará todo el progreso y la lista de jugadores.')) {
+            google.script.run
+                .withSuccessHandler(onServerAndPlayersReset)
+                .withFailureHandler(showErrorHost)
+                .resetServerAndPlayers();
+        }
+    });
+
+    // --- INICIALIZACIÓN ---
+    function pollHostUpdates() {
+        google.script.run
+            .withSuccessHandler(data => {
+                serverActiveState = data.serverActive;
+                serverStatusDisplay.textContent = `Servidor: ${serverActiveState ? 'Activo' : 'Inactivo'}`;
+                serverStatusDisplay.style.color = serverActiveState ? 'green' : 'red';
+                toggleServerButton.textContent = serverActiveState ? 'Apagar Servidor' : 'Encender Servidor';
+
+                if (serverActiveState) {
+                    gameInfoDiv.style.display = 'block';
+                    currentGlobalRoundHost = data.currentQuestionIndex;
+                    currentQuestionHost.textContent = `Ronda Global Activa: ${currentGlobalRoundHost}`;
+                    
+                    // Lógica para mostrar/ocultar los botones Iniciar/Terminar Juego
+                    if (data.gameStatus === 'WAITING') {
+                        startGameButton.style.display = 'block';
+                        endGameNowButton.style.display = 'none';
+                    } else if (data.gameStatus === 'IN_PROGRESS') {
+                        startGameButton.style.display = 'none';
+                        endGameNowButton.style.display = 'block';
+                    } else if (data.gameStatus === 'GAME_OVER') {
+                        startGameButton.style.display = 'none'; // El juego ha terminado, no se puede iniciar
+                        endGameNowButton.style.display = 'none'; // El juego ha terminado, no tiene sentido "terminar" de nuevo
+                    } else { // Fallback, podría ser si el juego está en un estado desconocido
+                        startGameButton.style.display = 'none';
+                        endGameNowButton.style.display = 'none';
+                    }
+
+                } else { // Servidor inactivo
+                    gameInfoDiv.style.display = 'none';
+                    startGameButton.style.display = 'none';
+                    endGameNowButton.style.display = 'none';
+                    currentQuestionHost.textContent = 'Ronda Global Activa: -'; 
+                }
+
+                displayPlayersAndScores(data.players);
+                // Si el juego ha terminado, ya deberíamos haber cargado todas las respuestas completas
+                // De lo contrario, esto actualizará las respuestas de la ronda actual si se están procesando
+                if (data.gameStatus !== 'GAME_OVER') {
+                    displayQuestionResponses(data.currentRoundResponses); 
+                }
+            })
+            .withFailureHandler(showErrorHost)
+            .getHostDashboardData(); 
+        
+        setTimeout(pollHostUpdates, 5000); 
+    }
+
+    // Iniciar el polling al cargar la ventana
+    window.onload = function() {
+        pollHostUpdates(); 
+    };
+</script>
